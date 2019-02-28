@@ -1,1 +1,0 @@
-# crnn-data-generate

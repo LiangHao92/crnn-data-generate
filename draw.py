@@ -7,6 +7,9 @@ import os
 import numpy as np
 from config import config_deal
 from math import *
+from fontTools.ttLib import TTCollection,TTFont
+from itertools import chain
+from fontTools.unicode import Unicode
 
 
 
@@ -26,28 +29,14 @@ class draw_deal(config_deal):
         img = cv2.GaussianBlur(img, (ksize, ksize), sigma)
         return img
 
-    #随机生成背景
-    def genback_rand(self):
-        bg_high=random.uniform(60,255)
-        bg_low=bg_high-random.uniform(1,60)
-        bg=np.random.randint(bg_low,bg_high,(self.height,self.width)).astype(np.uint8)
-        bg=self.gauss_blur(bg)
-        return bg
 
     #选取图片作为背景
-    def genback_pic(self):
+    def genback(self):
         bg_name=random.choice(self.bg_list)
         bg_path=os.path.join(self.back_path,bg_name)
         bg_img=cv2.imread(bg_path)
         bg_img=cv2.resize(bg_img,(self.width,self.height))
         return bg_img
-    
-    #生成背景图像
-    def genback(self):
-        if(random.randint(0,10)>self.ratio_genback_pic*10):
-            return self.genback_rand()
-        else:
-            return self.genback_pic()
 
     #选择字体
     def choose_font(self):
@@ -55,12 +44,6 @@ class draw_deal(config_deal):
         font_name=random.choice(self.font_list)
         font_name=os.path.join(self.font_path,font_name)
         font_use=ImageFont.truetype(font_name,font_size)
-        #space is too wide, so use the smaller size of space 
-        #ratio=random.randint(50,70)
-        '''ratio=100
-        print ratio,font_name
-        font_space=ImageFont.truetype(font_name,font_size*ratio/100)
-        return font_use,font_space,font_size'''
         return font_use,font_size
 
     #根据roi的颜色均值，选取字体的颜色
@@ -90,19 +73,21 @@ class draw_deal(config_deal):
             word_color_2=random.randint((bg_mean-10),(bg_mean+10))
             word_color_3=random.randint((bg_mean-10),(bg_mean+10))
         word_color=(word_color_1,word_color_2,word_color_3)
-        #print roi.mean(),word_color
         return word_color
 
     #在背景图上画出字符
     def drawtext(self,word):
         bg=self.genback()
         bg_image=Image.fromarray(np.uint8(bg))
-        #font_use,font_space,font_size=self.choose_font()
         font_use,font_size=self.choose_font()
         drawer=ImageDraw.Draw(bg_image)
         #末尾留够空间，以免字符越界
         #x_start,y_start为字符区域的左上角坐标
-        x_start=random.randint(0,self.width-font_size*15)
+        if(self.is_random_distance):
+            #如果为随机间距，则整个字符的宽度将更大，所以留的空间需要更大
+            x_start=random.randint(0,self.width-font_size*17)
+        else:
+            x_start=random.randint(0,self.width-font_size*12)
         y_start=random.randint(0,self.height-font_size*2)
         #x_start,y_start为字符区域的右下角坐标
         y_end=y_start
@@ -115,30 +100,18 @@ class draw_deal(config_deal):
         char_dis=[]
         #遍历各个字符，确定各个字符在图中的位置以及所有字符的最大高度和最小offset 
         for i,char in enumerate(word):
-            '''if(char==' '):
-                size=font_space.getsize(char)
-            else:
-                size=font_use.getsize(char)
-                char_offset=font_use.getoffset(char)
-                #print char_offset
-                if(y_offset>char_offset[1]):
-                    y_offset=char_offset[1]'''
             size=font_use.getsize(char)
             char_offset=font_use.getoffset(char)
             if(y_offset>char_offset[1]):
                 y_offset=char_offset[1]
             if(height<size[1]):
                 height=size[1]
-            if(self.char_gap_mode=='random_distance'):
-                if(random.randint(0,100)<95):
+            #如果设定字符间随机间距，则在0到字符高度的区间内随机取值
+            if(self.is_random_distance):
+                if(i==len(word)-1):
                     char_space=0
                 else:
-                    if(i==len(word)-1):
-                        char_space=0
-                    else:
-                        char_space=int(height*np.random.uniform(0,1.0))
-            elif(self.char_gap_mode=='space'):
-                char_space=0
+                    char_space=int(height*np.random.uniform(0,0.5))
             else:
                 char_space=0
             char_dis.append(size[0]+char_space)
@@ -155,10 +128,6 @@ class draw_deal(config_deal):
         char_x=x_start
         char_y=y_start
         for i,char in enumerate(word):
-            '''if(char==' '):
-                drawer.text((char_x,char_y),char,fill=color,font=font_space)
-            else:
-                drawer.text((char_x,char_y),char,fill=color,font=font_use)'''
             drawer.text((char_x,char_y),char,fill=color,font=font_use)
             char_x+=char_dis[i]
         #画上了字符的图像
@@ -186,6 +155,45 @@ class draw_deal(config_deal):
         points=[[0,0],[width,0],[0,height],[width,height]]
         return result,points
 
-                   
+    #检查字体是否支持当前字符
+    def check_font(self):
+        font_new=[]
+        for fonts in self.font_list:
+            fontsname=os.path.join(self.font_path,fonts)
+            #print '------------------------------------------'
+            #print fontsname
+            if(fontsname.endswith('ttc')):
+                ttc=TTCollection(fontsname)
+                fonts_load=ttc.fonts[0]
+            elif(fontsname.endswith('ttf') or fontsname.endswith('TTF') or fontsname.endswith('otf')):
+                ttf=TTFont(fontsname,0,allowVID=0,ignoreDecompileErrors=True,fontNumber=1)
+                fonts_load=ttf 
+            else:
+                #print 'the type of fonts is not supported !'
+                #return None
+                continue
+            chars=chain.from_iterable([y+(Unicode[y[0]],) for y in x.cmap.items()] for x in fonts_load['cmap'].tables)
+            #print fontsname,' support chars: ',len(chars)
+            chars_int=[]
+            for c in chars:
+                chars_int.append(c[0])
+            unsupport_chars=[]
+            support_chars=[]
+            for c in self.dict:
+                if ord(c) not in chars_int:
+                    unsupport_chars.append(c)
+                    #print c
+                else:
+                    support_chars.append(c)
+            fonts_load.close()
+            if(len(unsupport_chars) != 0):
+                print fontsname,' not support all the chars in dic !'
+            else:
+                #print fontsname,' supports all the chars in dic !'
+                font_new.append(fonts)
+        self.font_list=font_new
+        for fonts in self.font_list:
+            print fonts, ' is used .'
+    
 
 
